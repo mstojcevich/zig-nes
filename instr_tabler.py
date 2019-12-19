@@ -2,11 +2,8 @@
 
 # TODO There's a bug in the zig compiler that makes it impossible to call
 # non-async function pointers from inside of an async function.
-# Until that's fixed, things like AHX/SHA will have incredibly ugly implementation,
-# and pretty much all read-write operations will have needlessly long implementations.
+# Until that's fixed, this output isn't technically valid zig w/o a patched compiler.
 # https://github.com/ziglang/zig/issues/3656
-# ^ NOTE on above -- I patched the compiler to allow this to happen, but I still
-# haven't gone back and fixed the ugly code that was necessary to work around the bug.
 
 import bs4 as bs
 
