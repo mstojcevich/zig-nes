@@ -31,6 +31,12 @@ const AccessMode = enum {
     Write,
 };
 
+// Possible CPU activity (used for testing and debugging)
+const CpuActivity = enum {
+    FETCHING_INSTRUCTION,
+    EXECUTING_INSTRUCTION,
+};
+
 const CpuState = struct {
     regs: Registers,
     // The current frame (used for coroutine timing impl)
@@ -44,6 +50,8 @@ const CpuState = struct {
     // If access_mode is Read, this is the byte read from memory.
     // If access_mode is Write, this is the byte to write to memory.
     bus_data: u8,
+    // Activity the CPU is currently performing. Used for testing and debugging.
+    _current_activity: CpuActivity,
 };
 
 fn initial_state() CpuState {
@@ -61,6 +69,7 @@ fn initial_state() CpuState {
         .access_mode = AccessMode.Read,
         .mem_address = 0,
         .bus_data = 0,
+        ._current_activity = CpuActivity.FETCHING_INSTRUCTION,
     };
 }
 
@@ -425,9 +434,9 @@ fn indirect_indexed_modify(state: *CpuState, op: fn (*CpuState, u8) u8) void {
 // Perform a relative branch, using op as the test
 fn branch_relative(state: *CpuState, op: fn (*CpuState) bool) void {
     var operand = read_operand(state);
-    _ = read_memory(state, state.regs.PC);
     var branch_taken = op(state);
     if (branch_taken) {
+        _ = read_memory(state, state.regs.PC);
         var low_byte = @intCast(u8, state.regs.PC & 0xFF);
         var high_byte = @intCast(u8, state.regs.PC >> 8);
         var offset_low_byte: u8 = undefined;
@@ -1187,11 +1196,63 @@ fn bvc(state: *CpuState) bool {
     return !state.regs.P.overflow;
 }
 
+test "Instruction timings (simple)" {
+    // Simple sanity check for instruction timing, doesn't take in account
+    // variable timing (like when crossing a page boundary, or branch taken)
+    const timings = [_]u8{
+        7,6,0,8,3,3,5,5,3,2,2,2,4,4,6,6, // 0F
+        2,5,0,8,4,4,6,6,2,4,2,7,4,4,7,7, // 1F
+        0,6,0,8,3,3,5,5,4,2,2,2,4,4,6,6, // 2F
+        2,5,0,8,4,4,6,6,2,4,2,7,4,4,7,7, // 3F
+        6,6,0,8,3,3,5,5,3,2,2,2,0,4,6,6, // 4F
+        2,5,0,8,4,4,6,6,2,4,2,7,4,4,7,7, // 5F
+        6,6,0,8,3,3,5,5,4,2,2,2,0,4,6,6, // 6F
+        2,5,0,8,4,4,6,6,2,4,2,7,4,4,7,7, // 7F
+        2,6,0,6,3,3,3,3,2,2,2,0,4,4,4,4, // 8F
+        2,6,0,6,4,4,4,4,2,5,2,5,5,5,5,5, // 9F
+        2,6,2,6,3,3,3,3,2,2,2,2,4,4,4,4, // AF
+        2,5,0,5,4,4,4,4,2,4,2,4,4,4,4,4, // BF
+        2,6,2,0,3,3,5,0,2,2,2,0,4,4,6,0, // CF
+        2,5,0,0,4,4,6,0,2,4,2,0,4,4,7,0, // DF
+        2,6,2,8,3,3,5,5,2,2,2,2,4,4,6,6, // EF
+        2,5,0,8,4,4,6,6,2,4,2,7,4,4,7,7, // FF
+    };
+    for (timings) |expected_cycles, opcode| {
+        if (expected_cycles == 0) { // unimplemented or stp instruction
+            continue;
+        }
+
+        var cpu_state = initial_state();
+        cpu_state.regs.P.negative = opcode != 0x30; // Branch if minus
+        cpu_state.regs.P.overflow = opcode != 0x70; // Branch if overflow set
+        cpu_state.regs.P.carry = opcode != 0xB0; // Branch if carry set
+        cpu_state.regs.P.zero = opcode != 0xF0; // Branch if equal
+
+        // Run the fetch cycle
+        _ = async run_cpu(&cpu_state);
+        cpu_state.bus_data = @intCast(u8, opcode);
+        resume cpu_state.cur_frame;
+        cpu_state.bus_data = 0;
+
+        var cycles: u8 = 1;
+        while (cpu_state._current_activity == CpuActivity.EXECUTING_INSTRUCTION) {
+            resume cpu_state.cur_frame;
+            cycles += 1;
+        }
+        if (cycles != expected_cycles) {
+            std.debug.warn("{X:2}: {} != {}\n", .{opcode, expected_cycles, cycles});
+        }
+        assert(cycles == expected_cycles);
+    }
+}
+
 // Run the CPU for one cycle (until a suspend point is reached)
 fn run_cpu(state: *CpuState) void {
     while (true) {
+        state._current_activity = CpuActivity.FETCHING_INSTRUCTION;
         var opcode = read_memory(state, state.regs.PC);
         state.regs.PC += 1;
+        state._current_activity = CpuActivity.EXECUTING_INSTRUCTION;
 
         switch (opcode) {
             0x0 => {
@@ -1629,6 +1690,7 @@ fn run_cpu(state: *CpuState) void {
             },
             0x8a => {
                 txa(state);
+                _ = read_memory(state, state.regs.PC); // Waste a cycle reading the PC
             },
             0x8b => {
                 // TODO XAA (it has a "usual" value, but is unpredictable)
