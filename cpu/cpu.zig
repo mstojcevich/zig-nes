@@ -32,7 +32,7 @@ const AccessMode = enum {
 };
 
 // Possible CPU activity (used for testing and debugging)
-const CpuActivity = enum {
+pub const CpuActivity = enum {
     FETCHING_INSTRUCTION,
     EXECUTING_INSTRUCTION,
 };
@@ -62,7 +62,7 @@ pub fn initial_state() CpuState {
             .X = 0,
             .Y = 0,
             .S = 0xFD,
-            .PC = 0,
+            .PC = 0xC000,
             .P = @bitCast(CpuFlags, default_p),
         },
         .cur_frame = undefined,
