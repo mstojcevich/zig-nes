@@ -453,6 +453,48 @@ fn branch_relative(state: *CpuState, op: fn (*CpuState) bool) void {
     state.regs.PC +%= 1;
 }
 
+// Jump to an absolute address
+fn jmp_absolute(state: *CpuState) void {
+    var address = absolute_address_calc(state);
+    state.regs.PC = address;
+}
+
+// Jump indirectly "through" a value in memory
+// e.g. JMP 00 00 will jump to the 16-bit address stored in memory at 0x0000 and 0x0001
+fn jmp_through(state: *CpuState) void {
+    var addr_low = read_operand(state);
+    var addr_high = read_operand(state);
+
+    var target_low_addr = @shlExact(@intCast(u16, addr_high), 8) | addr_low;
+    // Intentionally not handling page crossing
+    var target_high_addr = @shlExact(@intCast(u16, addr_high), 8) | (addr_low +% 1);
+
+    var target_low = read_memory(state, target_low_addr);
+    var target_high = read_memory(state, target_high_addr);
+
+    state.regs.PC = @shlExact(@intCast(u16, target_high), 8) | target_low;
+}
+
+test "jmp_through doesn't cross pages" {
+    // Instead of crossing a page boundary, the low byte wraps around to 00 on the same page
+    var cpu_state = initial_state();
+    _ = async jmp_through(&cpu_state);
+    cpu_state.bus_data = 0xFF;
+    resume cpu_state.cur_frame;
+    cpu_state.bus_data = 0x00;
+
+    resume cpu_state.cur_frame;
+    assert(cpu_state.mem_address == 0x00FF); // Fetch low byte
+    cpu_state.bus_data = 0xBE;
+
+    resume cpu_state.cur_frame;
+    assert(cpu_state.mem_address == 0x0000); // Fetch high byte
+    cpu_state.bus_data = 0xBA;
+
+    resume cpu_state.cur_frame;
+    assert(cpu_state.regs.PC == 0xBABE);
+}
+
 // Instruction impls
 // --------------------------
 
@@ -1046,6 +1088,15 @@ fn rts(state: *CpuState) void {
     state.regs.PC +%= 1;
 }
 
+// Pushes the PC onto the stack, then jumps to absolute address
+fn jsr(state: *CpuState) void {
+    var pcl = read_operand(state);
+    _ = read_memory(state, 0x0100 | @intCast(u16, state.regs.S)); // waste a cycle
+    stack_push_u16(state, state.regs.PC);
+    var pch = read_operand(state);
+    state.regs.PC = @shlExact(@intCast(u16, pch), 8) | @intCast(u16, pcl);
+}
+
 // An invalid opcode was hit that halts the processor
 fn stp(state: *CpuState) void {
     // TODO do something to simulate the halt (so that other components still run, but the CPU does nothing)
@@ -1202,11 +1253,11 @@ test "Instruction timings (simple)" {
     const timings = [_]u8{
         7,6,0,8,3,3,5,5,3,2,2,2,4,4,6,6, // 0F
         2,5,0,8,4,4,6,6,2,4,2,7,4,4,7,7, // 1F
-        0,6,0,8,3,3,5,5,4,2,2,2,4,4,6,6, // 2F
+        6,6,0,8,3,3,5,5,4,2,2,2,4,4,6,6, // 2F
         2,5,0,8,4,4,6,6,2,4,2,7,4,4,7,7, // 3F
-        6,6,0,8,3,3,5,5,3,2,2,2,0,4,6,6, // 4F
+        6,6,0,8,3,3,5,5,3,2,2,2,3,4,6,6, // 4F
         2,5,0,8,4,4,6,6,2,4,2,7,4,4,7,7, // 5F
-        6,6,0,8,3,3,5,5,4,2,2,2,0,4,6,6, // 6F
+        6,6,0,8,3,3,5,5,4,2,2,2,5,4,6,6, // 6F
         2,5,0,8,4,4,6,6,2,4,2,7,4,4,7,7, // 7F
         2,6,0,6,3,3,3,3,2,2,2,0,4,4,4,4, // 8F
         2,6,0,6,4,4,4,4,2,5,2,5,5,5,5,5, // 9F
@@ -1355,9 +1406,7 @@ fn run_cpu(state: *CpuState) void {
                 indexed_abs_x_modify(state, slo);
             },
             0x20 => {
-                // TODO jsr
-                unreachable;
-                // absolute_UNKNOWN(state, jsr);
+                jsr(state);
             },
             0x21 => {
                 indexed_indirect_read(state, and_op);
@@ -1493,9 +1542,7 @@ fn run_cpu(state: *CpuState) void {
                 immediate_read(state, alr);
             },
             0x4c => {
-                // TODO jmp
-                unreachable;
-                // absolute_UNKNOWN(state, jmp);
+                jmp_absolute(state);
             },
             0x4d => {
                 absolute_read(state, eor);
@@ -1594,9 +1641,7 @@ fn run_cpu(state: *CpuState) void {
                 immediate_read(state, arr);
             },
             0x6c => {
-                // TODO jmp
-                // jmp_through_UNKNOWN(state, jmp);
-                unreachable;
+                jmp_through(state);
             },
             0x6d => {
                 absolute_read(state, adc);
