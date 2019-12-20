@@ -55,15 +55,15 @@ const CpuState = struct {
 };
 
 fn initial_state() CpuState {
-    comptime var default_p: u8 = 0b00100000;
+    comptime var default_p: u8 = 0b00100100;
     return CpuState{
         .regs = Registers{
             .A = 0,
             .X = 0,
             .Y = 0,
-            .S = 0xFF,
+            .S = 0xFD,
             .PC = 0,
-            .P = @bitCast(CpuFlags, default_p), // TODO what's the default here
+            .P = @bitCast(CpuFlags, default_p),
         },
         .cur_frame = undefined,
         .access_mode = AccessMode.Read,
