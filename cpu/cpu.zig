@@ -26,7 +26,7 @@ const Registers = struct {
 };
 
 // Whether the CPU is reading or writing from memory this cycle.
-const AccessMode = enum {
+pub const AccessMode = enum {
     Read,
     Write,
 };
