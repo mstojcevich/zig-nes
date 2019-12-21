@@ -16,6 +16,16 @@ const CpuFlags = packed struct {
     negative: bool,
 };
 
+test "CPU flag order" { // Negative flag = most significant bit
+    var state = initial_state();
+
+    state.regs.P.negative = true;
+    assert(@bitCast(u8, state.regs.P) & 0x80 == 0x80);
+
+    state.regs.P.negative = false;
+    assert(@bitCast(u8, state.regs.P) & 0x80 == 0x00);
+}
+
 const Registers = struct {
     A: u8,
     X: u8,
