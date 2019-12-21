@@ -122,7 +122,7 @@ fn stack_pop_u16(state: *CpuState) u16 {
 // Read memory at PC, then increment PC
 fn read_operand(state: *CpuState) u8 {
     var val = read_memory(state, state.regs.PC);
-    state.regs.PC += 1;
+    state.regs.PC +%= 1;
     return val;
 }
 
@@ -1297,12 +1297,51 @@ test "Instruction timings (simple)" {
     }
 }
 
+test "PC wraparound" {
+    // After FFFF, the PC wraps around to 0000
+    var state = initial_state();
+    state.regs.PC = 0xFFFF;
+    _ = async run_cpu(&state);
+
+    // Read instruction
+    assert(state.mem_address == 0xFFFF);
+    state.bus_data = 0xEA; // no-op
+    resume state.cur_frame;
+
+    // Dummy-read cycle
+    assert(state.mem_address == 0x0000);
+    resume state.cur_frame;
+
+    // Read next instruction
+    assert(state.mem_address == 0x0000);
+}
+
+test "PC wraparound (operand)" {
+    // The operand to an instruction at FFFF is at 0000
+    var state = initial_state();
+    state.regs.PC = 0xFFFF;
+    state.regs.A = 12;
+    _ = async run_cpu(&state);
+
+    // Read instruction
+    assert(state.mem_address == 0xFFFF);
+    state.bus_data = 0x69; // ADC immediate
+    resume state.cur_frame;
+
+    // Read immediate
+    assert(state.mem_address == 0x0000);
+    state.bus_data = 3;
+    resume state.cur_frame;
+
+    assert(state.regs.A == 15);
+}
+
 // Run the CPU for one cycle (until a suspend point is reached)
 pub fn run_cpu(state: *CpuState) void {
     while (true) {
         state._current_activity = CpuActivity.FETCHING_INSTRUCTION;
         var opcode = read_memory(state, state.regs.PC);
-        state.regs.PC += 1;
+        state.regs.PC +%= 1;
         state._current_activity = CpuActivity.EXECUTING_INSTRUCTION;
 
         switch (opcode) {
