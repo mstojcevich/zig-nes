@@ -350,8 +350,8 @@ fn indexed_abs_y_modify(state: *CpuState, op: fn (*CpuState, u8) u8) void {
 
 // Access memory at the 16-bit little-endian address read at (X + (mem at operand)) % 256
 fn indexed_indirect_address_calc(state: *CpuState) u16 {
-    var pointer_addr = read_operand(state);
-    var pointer = read_memory(state, pointer_addr);
+    var pointer = read_operand(state);
+    _ = read_memory(state, pointer);
 
     var low_addr = pointer +% state.regs.X;
     var low_byte = read_memory(state, low_addr);
@@ -450,17 +450,16 @@ fn branch_relative(state: *CpuState, op: fn (*CpuState) bool) void {
         var low_byte = @intCast(u8, state.regs.PC & 0xFF);
         var high_byte = @intCast(u8, state.regs.PC >> 8);
         var offset_low_byte: u8 = undefined;
-        var offset_overflowed = @addWithOverflow(u8, low_byte, operand, &offset_low_byte);
-        state.regs.PC = (state.regs.PC & 0xFF00) | @intCast(u16, low_byte);
+        var offset_overflowed = @addWithOverflow(u8, low_byte, operand, &offset_low_byte) and (operand & 0x80) == 0;
+        state.regs.PC = (state.regs.PC & 0xFF00) | @intCast(u16, offset_low_byte);
         _ = read_memory(state, state.regs.PC);
 
         if (offset_overflowed) { // Oops
             high_byte +%= 1;
-            state.regs.PC = @shlExact(@intCast(u16, high_byte), 8) | @intCast(u16, low_byte);
+            state.regs.PC = @shlExact(@intCast(u16, high_byte), 8) | @intCast(u16, offset_low_byte);
             _ = read_memory(state, state.regs.PC);
         }
     }
-    state.regs.PC +%= 1;
 }
 
 // Jump to an absolute address
@@ -855,7 +854,7 @@ fn sbc(state: *CpuState, val: u8) void {
     var carry = @subWithOverflow(u8, state.regs.A, val, &result);
     carry = carry or @subWithOverflow(u8, result, if (state.regs.P.carry) @as(u8, 0) else @as(u8, 1), &result);
 
-    state.regs.P.carry = carry;
+    state.regs.P.carry = !carry;
     state.regs.P.zero = result == 0;
     state.regs.P.negative = (result & 0b10000000) != 0;
     // Overflow = "is the sign bit incorrect?"
@@ -1049,7 +1048,14 @@ fn brk(state: *CpuState) void {
 fn rti(state: *CpuState) void {
     _ = read_memory(state, state.regs.PC); // waste a cycle
     _ = read_memory(state, 0x0100 | @intCast(u16, state.regs.S)); // waste a cycle
-    state.regs.P = @bitCast(CpuFlags, stack_pop_u8(state) & 0b11101111);
+
+    var p_val = stack_pop_u8(state);
+    // Even though it's not real, always keep "b" flag as zero when stored for consistency.
+    p_val &= 0b11101111;
+    // Even though it's not real, always keep bit 5 set, since it's always written as set.
+    p_val |= 0b00100000;
+
+    state.regs.P = @bitCast(CpuFlags, p_val);
     state.regs.PC = stack_pop_u16(state);
 }
 
