@@ -1,6 +1,122 @@
 const std = @import("std");
 const assert = @import("std").debug.assert;
 
+const Cartridge = struct {
+    // Read and write values accessible from the CPU
+    readFromCpu: fn (addr: u16) u8,
+    writeFromCpu: fn (addr: u16, val: u8) void,
+    // Read and write values accessible from the PPU
+    readFromPpu: fn (addr: u16) u8,
+    writeFromPpu: fn (addr: u16, val: u8) void,
+};
+
+pub const NromMapper = struct {
+    ram: [0x2000]u8, // I think only Family BASIC has this
+    rom: [0x8000]u8,
+    chr: [0x2000]u8,
+    chr_ram: bool,
+
+    const Self = @This();
+
+    fn readFromCpu(self: Self, addr: u16) u8 {
+        if (addr < 0x6000) {
+            // TODO is this really FF?
+            return 0xFF;
+        }
+        const pgr_addr = addr - 0x6000;
+        assert(pgr_addr < 0xA000);
+
+        // TODO what to return if there is no PRG RAM?
+        if (pgr_addr < 0x2000) {
+            return self.ram[pgr_addr];
+        }
+
+        return self.rom[pgr_addr - 0x2000];
+    }
+
+    fn writeFromCpu(self: *Self, addr: u16, val: u8) void {
+        if (addr < 0x6000) return;
+        const pgr_addr = addr - 0x6000;
+        assert(pgr_addr < 0xA000);
+
+        if (pgr_addr < 0x2000) {
+            self.ram[pgr_addr] = val;
+        }
+    }
+
+    fn readFromPpu(self: Self, addr: u16) u8 {
+        assert(addr < 0x2000);
+        return self.chr[addr];
+    }
+
+    fn writeFromPpu(self: *Self, addr: u16, val: u8) void {
+        // In reality NROM cartridges use CHR ROM
+        assert(addr < 0x2000);
+        if (chr_ram) {
+            self.chr[addr] = val;
+        }
+    }
+
+    pub fn readFromINes(header: INesHeader, file: *std.fs.File) NromMapper {
+        var mapper = NromMapper{
+            .ram = [_]u8{0} ** 0x2000,
+            .rom = [_]u8{0} ** 0x8000,
+            .chr = [_]u8{0} ** 0x2000,
+            .chr_ram = header.chr_size == 0,
+        };
+
+        if (header.has_trainer) {
+            file.seekBy(512) catch |err| {
+                std.debug.warn("Error seeking past trainer: {}\n", .{err});
+                std.process.exit(1);
+            };
+        }
+
+        // Read PRG ROM
+        if (header.prg_rom_size == 1) {
+            // 16KiB repeated
+            const bytes_read = file.read(mapper.rom[0..0x4000]) catch |err| {
+                std.debug.warn("Error reading PRG rom: {}\n", .{err});
+                std.process.exit(1);
+            };
+            if (bytes_read < 0x4000) {
+                std.debug.warn("Error reading PRG rom: unexpected end of file\n", .{});
+                std.process.exit(1);
+            }
+            for (mapper.rom[0..0x4000]) |b, i| mapper.rom[0x4000 + i] = b;
+        } else if (header.prg_rom_size == 2) {
+            const bytes_read = file.read(mapper.rom[0..0x8000]) catch |err| {
+                std.debug.warn("Error reading PRG rom: {}\n", .{err});
+                std.process.exit(1);
+            };
+            if (bytes_read < 0x8000) {
+                std.debug.warn("Error reading PRG rom: unexpected end of file\n", .{});
+                std.process.exit(1);
+            }
+        } else {
+            std.debug.warn("NROM w/ oversized PRG ROM: {}\n", .{header.prg_rom_size});
+            std.process.exit(1);
+        }
+
+        // Read CHR ROM
+        if (header.chr_size == 1) {
+            const bytes_read = file.read(mapper.chr[0..0x2000]) catch |err| {
+                std.debug.warn("Error reading CHR rom: {}\n", .{err});
+                std.process.exit(1);
+            };
+            if (bytes_read < 0x2000) {
+                std.debug.warn("Error reading CHR rom: unexpected end of file\n", .{});
+                std.process.exit(1);
+            }
+        } else if (header.chr_size != 0) {
+            std.debug.warn("NROM w/ oversized CHR ROM: {}\n", .{header.chr_size});
+            std.process.exit(1);
+        }
+
+        return mapper;
+    }
+};
+
 const MirrorArrangement = packed enum(u1) {
     Vertical = 0,
     Horizontal = 1,
@@ -18,7 +134,7 @@ const TvEncoding2 = packed enum(u2) {
     DUAL_B = 3,
 };
 
-const INesHeader = packed struct {
+pub const INesHeader = packed struct {
     magic: [4]u8, // "NES" followed by DOS EOF (0x4E, 0x45, 0x53, 0x1A)
     prg_rom_size: u8, // Size of PRG ROM in 16KiB units
     chr_size: u8, // Size of CHR ROM in 8KiB units (0 means CHR RAM is used)
