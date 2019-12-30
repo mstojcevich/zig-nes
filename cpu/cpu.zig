@@ -447,27 +447,22 @@ fn branch_relative(state: *CpuState, op: fn (*CpuState) bool) void {
     var branch_taken = op(state);
     if (branch_taken) {
         _ = read_memory(state, state.regs.PC);
+
         var low_byte = @intCast(u8, state.regs.PC & 0xFF);
         var high_byte = @intCast(u8, state.regs.PC >> 8);
-        var offset_low_byte: u8 = low_byte +% operand;
 
-        // TODO this is all wrong figure it out
+        var signed_operand = @bitCast(i8, operand);
+        var new_pc = @intCast(i32, state.regs.PC) + signed_operand;
+        var offset_low_byte = @intCast(u8, new_pc & 0xFF);
+        var offset_high_byte = @intCast(u8, new_pc >> 8);
 
-        // Overflow = "is the sign bit incorrect?"
-        var offset_overflowed = ((low_byte ^ operand) & 0x80) == 0 and ((low_byte ^ offset_low_byte) & 0x80) > 0;
-
-        state.regs.PC = (state.regs.PC & 0xFF00) | @intCast(u16, offset_low_byte);
-        // _ = read_memory(state, state.regs.PC);
-
-        if (offset_overflowed) { // Oops
-            _ = read_memory(state, state.regs.PC);
-            if ((operand & 0x80) > 0) {
-                high_byte -%= 1;
-            } else {
-                high_byte +%= 1;
-            }
-            state.regs.PC = @shlExact(@intCast(u16, high_byte), 8) | @intCast(u16, offset_low_byte);
+        if (offset_high_byte != high_byte) {
+            // Oops!
+            var oops_read_pc = @shlExact(@intCast(u16, high_byte), 8) | @intCast(u16, offset_low_byte);
+            _ = read_memory(state, oops_read_pc);
         }
+
+        state.regs.PC = @shlExact(@intCast(u16, offset_high_byte), 8) | @intCast(u16, offset_low_byte);
     }
 }
 
@@ -1101,6 +1096,8 @@ fn pla(state: *CpuState) void {
     _ = read_memory(state, 0x0100 | @intCast(u16, state.regs.S)); // waste a cycle
     var val = stack_pop_u8(state);
     state.regs.A = val;
+    state.regs.P.zero = state.regs.A == 0;
+    state.regs.P.negative = (state.regs.A & 0b10000000) != 0;
 }
 
 // Pops the PC off of the stack, then increments it
