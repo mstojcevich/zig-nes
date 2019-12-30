@@ -518,7 +518,14 @@ test "jmp_through doesn't cross pages" {
 fn adc(state: *CpuState, val: u8) void {
     var result: u8 = undefined;
     var carry = @addWithOverflow(u8, state.regs.A, val, &result);
-    carry = carry or @addWithOverflow(u8, result, if (state.regs.P.carry) @as(u8, 1) else @as(u8, 0), &result);
+    if (state.regs.P.carry) {
+        // There's a compiler bug (or something) if I use addWithOverflow here...
+        // It uses the undefined value of result instead of the one set by the
+        // other addWithOverflow :/
+        var new_result = result +% 1;
+        carry = carry or (new_result < result);
+        result = new_result;
+    }
 
     state.regs.P.carry = carry;
     state.regs.P.zero = result == 0;
@@ -856,7 +863,14 @@ fn anc(state: *CpuState, val: u8) void {
 fn sbc(state: *CpuState, val: u8) void {
     var result: u8 = undefined;
     var carry = @subWithOverflow(u8, state.regs.A, val, &result);
-    carry = carry or @subWithOverflow(u8, result, if (state.regs.P.carry) @as(u8, 0) else @as(u8, 1), &result);
+    if (!state.regs.P.carry) {
+        // There's a compiler bug (or something) if I use addWithOverflow here...
+        // It uses the undefined value of result instead of the one set by the
+        // other addWithOverflow :/
+        var new_result = result -% 1;
+        carry = carry or (new_result > result);
+        result = new_result;
+    }
 
     state.regs.P.carry = !carry;
     state.regs.P.zero = result == 0;
@@ -891,6 +905,12 @@ fn dec(state: *CpuState, val: u8) u8 {
     return result;
 }
 
+fn dcp(state: *CpuState, val: u8) u8 {
+    var ret_val = dec(state, val);
+    cmp(state, ret_val);
+    return ret_val;
+}
+
 // Increment by 1
 fn inc(state: *CpuState, val: u8) u8 {
     var result = val +% 1;
@@ -904,7 +924,7 @@ fn inc(state: *CpuState, val: u8) u8 {
 // Increment by 1, then SBC from A
 fn isc(state: *CpuState, val: u8) u8 {
     var result = inc(state, val);
-    sbc(state, result); // TODO ASAP does this output to the accumulator or memory??
+    sbc(state, result);
     return result;
 }
 
@@ -1975,9 +1995,7 @@ pub fn run_cpu(state: *CpuState) void {
                 immediate_read(state, ign);
             },
             0xc3 => {
-                // TODO implement DCP
-                // indexed_indirect_modify(state, dcp);
-                unreachable;
+                indexed_indirect_modify(state, dcp);
             },
             0xc4 => {
                 zero_page_read(state, cpy);
@@ -1989,9 +2007,7 @@ pub fn run_cpu(state: *CpuState) void {
                 zero_page_modify(state, dec);
             },
             0xc7 => {
-                // TODO implement DCP
-                // zero_page_modify(state, dcp);
-                unreachable;
+                zero_page_modify(state, dcp);
             },
             0xc8 => {
                 iny(state);
@@ -2019,9 +2035,7 @@ pub fn run_cpu(state: *CpuState) void {
                 absolute_modify(state, dec);
             },
             0xcf => {
-                // TODO implement DCP
-                // absolute_modify(state, dcp);
-                unreachable;
+                absolute_modify(state, dcp);
             },
             0xd0 => {
                 branch_relative(state, bne);
@@ -2033,9 +2047,7 @@ pub fn run_cpu(state: *CpuState) void {
                 stp(state);
             },
             0xd3 => {
-                // TODO implement DCP
-                // indirect_indexed_modify(state, dcp);
-                unreachable;
+                indirect_indexed_modify(state, dcp);
             },
             0xd4 => {
                 indexed_zp_x_read(state, ign);
@@ -2047,9 +2059,7 @@ pub fn run_cpu(state: *CpuState) void {
                 indexed_zp_x_modify(state, dec);
             },
             0xd7 => {
-                // TODO implement DCP
-                // indexed_zp_x_modify(state, dcp);
-                unreachable;
+                indexed_zp_x_modify(state, dcp);
             },
             0xd8 => {
                 cld(state);
@@ -2063,9 +2073,7 @@ pub fn run_cpu(state: *CpuState) void {
                 _ = read_memory(state, state.regs.PC); // Waste a cycle reading the PC
             },
             0xdb => {
-                // TODO implement DCP
-                // indexed_abs_y_modify(state, dcp);
-                unreachable;
+                indexed_abs_y_modify(state, dcp);
             },
             0xdc => {
                 indexed_abs_x_read(state, ign);
@@ -2077,9 +2085,7 @@ pub fn run_cpu(state: *CpuState) void {
                 indexed_abs_x_modify(state, dec);
             },
             0xdf => {
-                // TODO implement DCP
-                // indexed_abs_x_modify(state, dcp);
-                unreachable;
+                indexed_abs_x_modify(state, dcp);
             },
             0xe0 => {
                 immediate_read(state, cpx);
