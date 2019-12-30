@@ -449,15 +449,24 @@ fn branch_relative(state: *CpuState, op: fn (*CpuState) bool) void {
         _ = read_memory(state, state.regs.PC);
         var low_byte = @intCast(u8, state.regs.PC & 0xFF);
         var high_byte = @intCast(u8, state.regs.PC >> 8);
-        var offset_low_byte: u8 = undefined;
-        var offset_overflowed = @addWithOverflow(u8, low_byte, operand, &offset_low_byte) and (operand & 0x80) == 0;
+        var offset_low_byte: u8 = low_byte +% operand;
+
+        // TODO this is all wrong figure it out
+
+        // Overflow = "is the sign bit incorrect?"
+        var offset_overflowed = ((low_byte ^ operand) & 0x80) == 0 and ((low_byte ^ offset_low_byte) & 0x80) > 0;
+
         state.regs.PC = (state.regs.PC & 0xFF00) | @intCast(u16, offset_low_byte);
-        _ = read_memory(state, state.regs.PC);
+        // _ = read_memory(state, state.regs.PC);
 
         if (offset_overflowed) { // Oops
-            high_byte +%= 1;
-            state.regs.PC = @shlExact(@intCast(u16, high_byte), 8) | @intCast(u16, offset_low_byte);
             _ = read_memory(state, state.regs.PC);
+            if ((operand & 0x80) > 0) {
+                high_byte -%= 1;
+            } else {
+                high_byte +%= 1;
+            }
+            state.regs.PC = @shlExact(@intCast(u16, high_byte), 8) | @intCast(u16, offset_low_byte);
         }
     }
 }
