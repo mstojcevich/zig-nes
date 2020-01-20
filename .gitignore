@@ -1,2 +1,5 @@
 /zig-cache
 /.pytest_cache
+/main
+/main.o
+/result

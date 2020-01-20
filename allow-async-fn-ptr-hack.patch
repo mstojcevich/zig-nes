@@ -1,0 +1,22 @@
+commit 33b23f0e2c2e3598914162d2116230c1b3d8359b
+Author: Marcus Stojcevich <mstojcevich@gmail.com>
+Date:   Thu Dec 19 22:05:13 2019 -0500
+
+    HACK: Skip analysis of non comptime-known functions to work around bug w/ non-async function pointers as args to async functions
+
+diff --git a/src/analyze.cpp b/src/analyze.cpp
+index 35a4bd7d4..0b0adb49b 100644
+--- a/src/analyze.cpp
++++ b/src/analyze.cpp
+@@ -6121,9 +6121,8 @@ static Error resolve_async_frame(CodeGen *g, ZigType *frame_type) {
+         }
+         ZigFn *callee = call->fn_entry;
+         if (callee == nullptr) {
+-            add_node_error(g, call->base.source_node,
+-                buf_sprintf("function is not comptime-known; @asyncCall required"));
+-            return ErrorSemanticAnalyzeFail;
++            // HACK: no
++            continue;
+         }
+         if (callee->body_node == nullptr) {
+             continue;
