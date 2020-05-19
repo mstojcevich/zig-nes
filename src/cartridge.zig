@@ -18,7 +18,7 @@ pub const NromMapper = struct {
 
     const Self = @This();
 
-    fn readFromCpu(self: Self, addr: u16) u8 {
+    pub fn readFromCpu(self: Self, addr: u16) u8 {
         if (addr < 0x6000) {
             // TODO is this really FF?
             return 0xFF;
@@ -34,7 +34,7 @@ pub const NromMapper = struct {
         return self.rom[pgr_addr - 0x2000];
     }
 
-    fn writeFromCpu(self: *Self, addr: u16, val: u8) void {
+    pub fn writeFromCpu(self: *Self, addr: u16, val: u8) void {
         if (addr < 0x6000) return;
         const pgr_addr = addr - 0x6000;
         assert(pgr_addr < 0xA000);
