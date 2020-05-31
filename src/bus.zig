@@ -2,6 +2,7 @@ const assert = @import("std").debug.assert;
 const std = @import("std");
 const cartridge = @import("cartridge.zig");
 const cpu = @import("cpu/cpu.zig");
+const ppu = @import("ppu.zig");
 
 fn read_memory(addr: u16, internal_ram: [0x800]u8, cartridge_mapper: cartridge.NromMapper) u8 {
     if (addr < 0x2000) {
@@ -56,6 +57,9 @@ pub fn run() void {
     var cpu_state = cpu.initial_state();
     _ = async cpu.run_cpu(&cpu_state);
 
+    var ppu_state = ppu.init();
+    _ = async ppu.run_ppu(&ppu_state);
+
     var cycle_count: usize = 0;
     while (cycle_count <= 26547) : (cycle_count += 1) {
         if (cpu_state._current_activity == cpu.CpuActivity.FETCHING_INSTRUCTION) {
@@ -70,5 +74,7 @@ pub fn run() void {
             },
         }
         resume cpu_state.cur_frame;
+        resume ppu_state.cur_frame;
     }
+    std.debug.warn("{X:2} {X:2}", .{internal_ram[0x02], internal_ram[0x03]});
 }

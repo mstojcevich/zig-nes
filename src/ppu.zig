@@ -1,3 +1,8 @@
+const assert = @import("std").debug.assert;
+const c = @cImport({
+    @cInclude("SDL2/SDL.h");
+});
+
 const DUMMY_SCANLINE = 261;
 
 const PpuCtrl = packed struct {
@@ -28,11 +33,19 @@ const PpuStatus = packed struct {
     in_vblank: bool,
 };
 
+const VramAddr = packed struct {
+    coarse_x_scroll: u5,
+    coarse_y_scroll: u5,
+    horiz_nametable: bool,
+    vert_nametable: bool,
+    fine_y_scroll: u3,
+    _unused: u1,
+};
+
 pub const PpuState = struct {
-    ctrl: PpuCtrl,
-    mask: PpuMask,
-    stat: PpuStatus,
-    oam_addr: u8, // Current OAM address for reading/writing
+    cur_frame: anyframe,
+    vram_addr: VramAddr,  // 'v' register
+    temp_vram_addr: VramAddr,  // 't' register, the address of the top-left onscreen tile
     mem_address: u16,
     bus_data: u8,
     vert_pos: u32,
@@ -43,11 +56,9 @@ pub const PpuState = struct {
     out_framebuffer: [256 * 240]u8, // TODO need more than a byte
 };
 
-fn init() PpuState {
+pub fn init() PpuState {
     return PpuState{
-        .ctrl = @bitCast(PpuCtrl, 0x00),
-        .mask = @bitCast(PpuMask, 0x00),
-        .stat = @bitCast(PpuStatus, 0x00), // TODO usually starts in vblank actually... And sprite overflow should be set.
+        .cur_frame = undefined,
         .oam_addr = 0x00,
         .mem_address = 0,
         .bus_data = 0x00,
@@ -56,15 +67,15 @@ fn init() PpuState {
         .buffer_tile = TileRow{
             .nametable_data = 0,
             .attrib_data = 0,
-            .pattern_data = [_]u8{0} * 8,
+            .pattern_data = [_]u8{0} ** 8,
         },
         .active_tile = TileRow{
             .nametable_data = 0,
             .attrib_data = 0,
-            .pattern_data = [_]u8{0} * 8,
+            .pattern_data = [_]u8{0} ** 8,
         },
         .odd_frame = false,
-        .out_framebuffer = [_]u8{0} * (256 * 240),
+        .out_framebuffer = [_]u8{0} ** (256 * 240),
     };
 }
 
@@ -73,7 +84,6 @@ fn read_memory(state: *PpuState, address: u16) u8 {
     draw_a_pixel(state);
     draw_a_pixel(state);
 
-    state.access_mode = AccessMode.Read;
     state.mem_address = address;
     suspend {
         state.cur_frame = @frame();
@@ -110,7 +120,9 @@ const TileRow = struct {
 };
 
 /// Fetches tile data and puts it into state.buffer_tile. Spends 8 PPU cycles.
-fn fetch_tile(state: *PpuState, line_num: u8, line_tile_num: u8) void {
+fn fetch_tile(state: *PpuState, line_num: u32, line_tile_num: u8) void {
+    // TODO implement coarse X component of V now that we're fetching a new tile
+
     const tile_num = (line_num / 8) * 32 + line_tile_num;
     const pattern_index = read_nametable(state, tile_num);
 
@@ -119,6 +131,8 @@ fn fetch_tile(state: *PpuState, line_num: u8, line_tile_num: u8) void {
     const pattern_table_addr = 16 * pattern_index; // TODO probably not 16? Because then the max would be 4096?? Security issue at the very least.
     var pattern_table_low = read_pattern_table(state, pattern_table_addr);
     var pattern_table_high = read_pattern_table(state, pattern_table_addr + 8);
+
+    increment_course_x(&state.vram_addr);
 
     const tile_row = TileRow{
         .nametable_data = nametable_byte,
@@ -141,9 +155,11 @@ fn fetch_tile(state: *PpuState, line_num: u8, line_tile_num: u8) void {
 }
 
 /// Render the current scanline. Spends 340 PPU cycles.
-fn render_scanline(state: *PpuState, line_num: u8) void {
+fn render_scanline(state: *PpuState) void {
+    const line_num = state.vert_pos;
+
     // Dummy cycle, skipped for the first visible line on odd frames
-    if (!(line_num == 0 and odd_frame)) {
+    if (!(line_num == 0 and state.odd_frame)) {
         // TODO the address here is the low pattern table address
         // (using the address read during the last line's throwaway cycles)
         _ = read_memory(state, 0); // Cycle 0
@@ -151,14 +167,19 @@ fn render_scanline(state: *PpuState, line_num: u8) void {
 
     // Fetch data for 32 tiles
     for ([_]u8{0} ** 32) |_, line_tile_num| { // Cycles 1-256 (8*32 = 256)
-        fetch_tile(state, line_num, line_tile_num + 2);
+        fetch_tile(state, line_num, @intCast(u8, line_tile_num + 2));
     }
+
+    // TODO when do these happen? Should they happen after the
+    // first garbge read_memory below?
+    increment_y(&state.vram_addr);  // cycle 256?
+    horizontal_reset(&state.vram_addr);  // cycle 257?
 
     // Fetch pattern table data for the *next* scanline's objects
     for ([_]u8{0} ** 8) |_, _| { // Cycles 257-320 (8*8 = 64)
         // Read two garbage nametable bytes (the same pipeline is used for tiles & sprites)
-        const _ = read_memory(state, 0);
-        const _ = read_memory(state, 0);
+        _ = read_memory(state, 0);
+        _ = read_memory(state, 0);
 
         const pattern_table_low = read_memory(state, 0);
         const pattern_table_high = read_memory(state, 0);
@@ -166,7 +187,7 @@ fn render_scanline(state: *PpuState, line_num: u8) void {
 
     // Fetch two tiles for the next scanline
     for ([_]u8{0} ** 2) |_, line_tile_num| { // Cycles 321-336 (8*2 = 16)
-        fetch_tile(state, line_num + 1, line_tile_num);
+        fetch_tile(state, line_num + 1, @intCast(u8, line_tile_num));
     }
 
     // Fetch two throwaway nametable bytes
@@ -186,7 +207,7 @@ fn unset_vblank(state: *PpuState) void {
 }
 
 /// Start running the PPU
-fn run_ppu(state: *PpuState) void {
+pub fn run_ppu(state: *PpuState) void {
     assert(state.vert_pos == DUMMY_SCANLINE);
 
     // Dummy scanline
@@ -196,7 +217,7 @@ fn run_ppu(state: *PpuState) void {
     // Real scanlines
     state.vert_pos = 0;
     for ([_]u8{0} ** 240) |_, _| {
-        state.hoiz_pos = 0;
+        state.horiz_pos = 0;
         render_scanline(state);
         state.vert_pos += 1;
     }
