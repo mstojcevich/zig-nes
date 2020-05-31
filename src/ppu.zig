@@ -3,7 +3,7 @@ const c = @cImport({
     @cInclude("SDL2/SDL.h");
 });
 
-const DUMMY_SCANLINE = 261;
+const DUMMY_SCANLINE = 241;
 
 const PpuCtrl = packed struct {
     nametable_select: u2,
@@ -126,11 +126,12 @@ fn fetch_tile(state: *PpuState, line_num: u32, line_tile_num: u8) void {
     const tile_num = (line_num / 8) * 32 + line_tile_num;
     const pattern_index = read_nametable(state, tile_num);
 
-    const attribute_table_byte = read_memory(state, 0);
+    const attrib_num = (line_num / 32) * 8 + (line_tile_num / 4);
+    const attribute_table_byte = read_attrib(state, attrib_num);
 
-    const pattern_table_addr = 16 * pattern_index; // TODO probably not 16? Because then the max would be 4096?? Security issue at the very least.
+    const pattern_table_addr = 2 * pattern_index;
     var pattern_table_low = read_pattern_table(state, pattern_table_addr);
-    var pattern_table_high = read_pattern_table(state, pattern_table_addr + 8);
+    var pattern_table_high = read_pattern_table(state, pattern_table_addr + 1);
 
     increment_course_x(&state.vram_addr);
 
@@ -152,6 +153,50 @@ fn fetch_tile(state: *PpuState, line_num: u32, line_tile_num: u8) void {
     // TODO: actual shift register instead of swapping?
     state.active_tile = state.buffer_tile;
     state.buffer_tile = tile_row;
+}
+
+/// Read tile data from the nametable
+fn read_nametable(state: *PpuState, tile_num: u32) u8 {
+    // Within the nametable, each tile on the screen is represented
+    // as a single byte (which represents the pattern table index).
+
+    assert(tile_num < 0x400);
+
+    // Base address that the current nametable starts at.
+    const nametable_base = switch(state.ctrl.nametable_select) {
+        0 => 0x2000, // Nametable 0: 0x2000-0x23BF
+        1 => 0x2400, // Nametable 1: 0x2400-0x27BF
+        2 => 0x2800, // Nametable 2: 0x2800-0x2BBF
+        3 => 0x2C00, // Nametable 3: 0x2C00-0x2FBF
+    };
+
+    return read_memory(state, nametable_base + tile_num);
+}
+
+/// Read an attribute byte
+fn read_attrib(state: *PpuState, attrib_num: u32) u8 {
+    assert(attrib_num < 0x40);
+
+    const attrib_table_base = switch(state.ctrl.nametable_select) {
+        0 => 0x2000, // Nametable 0: 0x23C0-0x23FF
+        1 => 0x2400, // Nametable 1: 0x27C0-0x27FF
+        2 => 0x2800, // Nametable 2: 0x2BC0-0x2BFF
+        3 => 0x2C00, // Nametable 3: 0x2FC0-0x2FFF
+    };
+
+    return read_memory(state, attrib_table_base + attrib_num);
+}
+
+/// Read from the pattern table
+fn read_pattern_table(state: *PpuState, pattern_table_addr: u32) u8 {
+    assert(pattern_table_addr < 0x1000);
+
+    const attrib_table_base = switch(state.ctrl.background_tile_select) {
+        0 => 0x0000, // Attrib table 0: 0x0000-0x0FFF
+        1 => 0x1000, // Attrib table 1: 0x1000-0x1FFF
+    };
+
+    return read_memory(state, attrib_table_base + pattern_table_addr);
 }
 
 /// Render the current scanline. Spends 340 PPU cycles.
