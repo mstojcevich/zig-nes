@@ -29,15 +29,16 @@ fn write_memory(addr: u16, val: u8, internal_ram: *[0x800]u8, cartridge_mapper: 
     std.debug.warn("Write unimplemented address: {X:4}\n", .{addr});
 }
 
-fn read_ppu_memory(addr: u16, nametable_ram: *[0xA00], cartridge_mapper: *cartridge.NromMapper) u8 {
+fn read_ppu_memory(addr: u16, nametable_ram: [0x800]u8, cartridge_mapper: cartridge.NromMapper) u8 {
     if (addr >= 0x2000) {
         if (addr >= 0x3000 and addr <= 0x3EFF) {
             // TODO nametable mirroring
-            return nametable_ram[(addr - 0x3000) % 0xA00];
-        } else if (addr >= 0x2000 && addr <= 0x3000) {
-            return nametable_ram[(addr - 0x2000) % 0xA00];
+            return nametable_ram[(addr - 0x3000) % 0x800];
+        } else if (addr >= 0x2000 and addr <= 0x3000) {
+            return nametable_ram[(addr - 0x2000) % 0x800];
         } else {
-            std.debug.warn("PPU read from unimplemented address: {X:4}\n");
+            std.debug.warn("PPU read from unimplemented address: {X:4}\n", .{addr});
+            return 0xFF;
         }
     } else {
         return cartridge_mapper.readFromPpu(addr);
@@ -68,6 +69,7 @@ pub fn run() void {
     var cartridge_mapper = cartridge.NromMapper.readFromINes(cartridge_header, &cartridge_file);
 
     var internal_ram = [_]u8{0} ** 0x800; // 2KB of internal RAM
+    var internal_vram = [_]u8{0} ** 0x800; // 2KB of internal VRAM
 
     var cpu_state = cpu.initial_state();
     _ = async cpu.run_cpu(&cpu_state);
@@ -90,8 +92,8 @@ pub fn run() void {
         }
         resume cpu_state.cur_frame;
 
-        ppu_state.bus_data = read_ppu_memory(ppu_state.mem_address, internal_ram, cartridge_mapper);
+        ppu_state.bus_data = read_ppu_memory(ppu_state.mem_address, internal_vram, cartridge_mapper);
         resume ppu_state.cur_frame;
     }
-    std.debug.warn("{X:2} {X:2}", .{internal_ram[0x02], internal_ram[0x03]});
+    std.debug.warn("{X:2} {X:2}", .{ internal_ram[0x02], internal_ram[0x03] });
 }
