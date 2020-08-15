@@ -62,6 +62,10 @@ pub const CpuState = struct {
     bus_data: u8,
     // Activity the CPU is currently performing. Used for testing and debugging.
     _current_activity: CpuActivity,
+    // Whether the NMI (non-maskable interrupt) input is high
+    nmi_pending: bool,
+    // Whether the IRQ (interrupt request) input is high
+    irq_pending: bool,
 };
 
 pub fn initial_state() CpuState {
@@ -80,6 +84,8 @@ pub fn initial_state() CpuState {
         .mem_address = 0,
         .bus_data = 0,
         ._current_activity = CpuActivity.FETCHING_INSTRUCTION,
+        .irq_pending = false,
+        .nmi_pending = false,
     };
 }
 
@@ -1057,13 +1063,32 @@ fn brk(state: *CpuState) void {
     // There's no real "b" flag, it's only set in the value pushed to the stack.
     // (it's used to distinguish whether it's a software or hardware interrupt)
     var p_for_stack = @bitCast(u8, state.regs.P) | 0b00010000;
+    if ((state.irq_pending and !state.regs.P.iupt_disable) or state.nmi_pending) {
+        p_for_stack = @bitCast(u8, state.regs.P) & 0b11101111;
+    }
+
     stack_push_u16(state, state.regs.PC);
     stack_push_u8(state, p_for_stack);
     state.regs.P.iupt_disable = true;
 
-    // TODO NMI can hijack a BRK
-    var dest_addr = @intCast(u16, read_memory(state, 0xFFFE));
-    dest_addr |= @shlExact(@intCast(u16, read_memory(state, 0xFFFF)), 8);
+    // NOTE that IRQ and NMI can "hijack" a brk, if they get trigged during the execution of a BRK
+    // instruction. If the interrupt occurs midway through the BRK instruction, the instruction will
+    // effectively be lost/skipped, since the target address became the IRQ/NMI target and not the
+    // BRK target.
+    var vector: u16 = 0xFFFE;
+    if (state.nmi_pending) {
+        vector = 0xFFFA;
+    }
+    var dest_addr = @intCast(u16, read_memory(state, vector));
+    dest_addr |= @shlExact(@intCast(u16, read_memory(state, vector + 1)), 8);
+
+    if (state.nmi_pending) {
+        state.nmi_pending = false;
+    } else if (state.irq_pending) {
+        // TODO "If both an NMI and an IRQ are pending at the end of an instruction, the NMI will be handled and the pending status of the IRQ forgotten (though it's likely to be detected again during later polling). "
+        // I'm not 100% sure what the means, but it sounds like if nmi_pending was true, both flags get cleared (maybe they're both unconditionally cleared during brks?).
+        state.irq_pending = false;
+    }
 
     state.regs.PC = dest_addr;
 }
@@ -1383,7 +1408,14 @@ pub fn run_cpu(state: *CpuState) void {
     while (true) {
         state._current_activity = CpuActivity.FETCHING_INSTRUCTION;
         var opcode = read_memory(state, state.regs.PC);
-        state.regs.PC +%= 1;
+        if ((state.irq_pending and !state.regs.P.iupt_disable) or state.nmi_pending) {
+            opcode = 0x00;  // Ignore read opcode, force BRK
+            // Note: interrupts read PC twice. This happens inside of BRK though, so as long
+            // as we perform a regular brk we should still be accurate.
+        } else {
+            // Interrupts skip a PC increment
+            state.regs.PC +%= 1;
+        }
         state._current_activity = CpuActivity.EXECUTING_INSTRUCTION;
 
         switch (opcode) {
