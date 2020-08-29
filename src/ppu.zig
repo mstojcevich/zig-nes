@@ -36,8 +36,8 @@ const PpuStatus = packed struct {
 const VramAddr = packed struct {
     coarse_x_scroll: u5,
     coarse_y_scroll: u5,
-    horiz_nametable: bool,
-    vert_nametable: bool,
+    horiz_nametable: u1,
+    vert_nametable: u1,
     fine_y_scroll: u3,
     _unused: u1,
 };
@@ -125,13 +125,10 @@ const TileRow = struct {
 };
 
 /// Fetches tile data and puts it into state.buffer_tile. Spends 8 PPU cycles.
-fn fetch_tile(state: *PpuState, line_num: u32, line_tile_num: u8) void {
-    // TODO implement coarse X component of V now that we're fetching a new tile
-    const tile_num = @intCast(u16, (line_num / 8) * 32 + line_tile_num);
-    const pattern_index = read_nametable(state, tile_num);
+fn fetch_tile(state: *PpuState) void {
+    const pattern_index = read_nametable(state);
 
-    const attrib_num = (line_num / 32) * 8 + (line_tile_num / 4);
-    const attribute_table_byte = read_attrib(state, attrib_num);
+    const attribute_table_byte = read_attrib(state);
 
     const pattern_table_addr = 2 * pattern_index;
     var pattern_table_low = read_pattern_table(state, pattern_table_addr);
@@ -160,34 +157,28 @@ fn fetch_tile(state: *PpuState, line_num: u32, line_tile_num: u8) void {
 }
 
 /// Read tile data from the nametable
-fn read_nametable(state: *PpuState, tile_num: u16) u8 {
-    // Within the nametable, each tile on the screen is represented
-    // as a single byte (which represents the pattern table index).
-    assert(tile_num < 0x400);
+fn read_nametable(state: *PpuState) u8 {
+    // v register w/o the horizontal scroll bits. The selected nametable
+    // is already part of the v register, as are the coarse x & y offsets.
+    const nt_offset = @bitCast(u16, state.vram_addr) & 0x0FFF;
+    const nt_address: u16 = 0x2000 | nt_offset;
 
-    // Base address that the current nametable starts at.
-    const nametable_base: u16 = switch (state.ctrl.nametable_select) {
-        0 => 0x2000, // Nametable 0: 0x2000-0x23BF
-        1 => 0x2400, // Nametable 1: 0x2400-0x27BF
-        2 => 0x2800, // Nametable 2: 0x2800-0x2BBF
-        3 => 0x2C00, // Nametable 3: 0x2C00-0x2FBF
-    };
-
-    return read_memory(state, nametable_base + tile_num);
+    return read_memory(state, nt_address);
 }
 
 /// Read an attribute byte
-fn read_attrib(state: *PpuState, attrib_num: u32) u8 {
-    assert(attrib_num < 0x40);
+fn read_attrib(state: *PpuState) u8 {
+    const attrib_base: u16 = 0x23C0
+        | (@intCast(u16, state.vram_addr.vert_nametable) << 11)
+        | (@intCast(u16, state.vram_addr.horiz_nametable) << 10);
 
-    const attrib_table_base: u16 = switch (state.ctrl.nametable_select) {
-        0 => 0x2000, // Nametable 0: 0x23C0-0x23FF
-        1 => 0x2400, // Nametable 1: 0x27C0-0x27FF
-        2 => 0x2800, // Nametable 2: 0x2BC0-0x2BFF
-        3 => 0x2C00, // Nametable 3: 0x2FC0-0x2FFF
-    };
+    // Each attrib table entry covers 4 tiles
+    const attrib_x: u16 = state.vram_addr.coarse_x_scroll >> 2;
+    const attrib_y: u16 = state.vram_addr.coarse_y_scroll >> 2;
+    const attrib_offset: u16 = (attrib_y << 3) | attrib_x;
 
-    return read_memory(state, attrib_table_base + @intCast(u16, attrib_num));
+    const attrib_address = attrib_base | attrib_offset;
+    return read_memory(state, attrib_base | attrib_offset);
 }
 
 /// Read from the pattern table
@@ -214,8 +205,8 @@ fn render_scanline(state: *PpuState) void {
     }
 
     // Fetch data for 32 tiles
-    for ([_]u8{0} ** 32) |_, line_tile_num| { // Cycles 1-256 (8*32 = 256)
-        fetch_tile(state, line_num, @intCast(u8, line_tile_num + 2));
+    for ([_]u8{0} ** 32) |_, _| { // Cycles 1-256 (8*32 = 256)
+        fetch_tile(state);
     }
 
     // TODO when do these happen? Should they happen after the
@@ -234,15 +225,14 @@ fn render_scanline(state: *PpuState) void {
     }
 
     // Fetch two tiles for the next scanline
-    for ([_]u8{0} ** 2) |_, line_tile_num| { // Cycles 321-336 (8*2 = 16)
-        fetch_tile(state, line_num + 1, @intCast(u8, line_tile_num));
+    for ([_]u8{0} ** 2) |_, _| { // Cycles 321-336 (8*2 = 16)
+        fetch_tile(state);
     }
 
     // Fetch two throwaway nametable bytes
     for ([_]u8{0} ** 2) |_, n| { // Cycles 337-340 (2*2 = 4)
-        const tile_num = ((line_num + 1) / 8) * 32 + 2 + n;
-        _ = read_nametable(state, @intCast(u16, tile_num));
-        _ = read_nametable(state, @intCast(u16, tile_num));
+        _ = read_nametable(state);
+        _ = read_nametable(state);
     }
 }
 
@@ -298,7 +288,7 @@ pub fn run_ppu(state: *PpuState) void {
 fn increment_coarse_x(vram_addr: *VramAddr) void {
     if (vram_addr.coarse_x_scroll == 31) {
         vram_addr.coarse_x_scroll = 0;
-        vram_addr.horiz_nametable = !vram_addr.horiz_nametable;
+        vram_addr.horiz_nametable +%= 1;
     } else {
         vram_addr.coarse_x_scroll += 1;
     }
@@ -309,7 +299,7 @@ fn increment_y(vram_addr: *VramAddr) void {
         vram_addr.fine_y_scroll = 0;
         if (vram_addr.coarse_y_scroll == 29) {
             vram_addr.coarse_y_scroll = 0;
-            vram_addr.vert_nametable = !vram_addr.vert_nametable;
+            vram_addr.vert_nametable +%= 1;
         } else if (vram_addr.coarse_y_scroll == 31) {
             vram_addr.coarse_y_scroll = 0;
         } else {
