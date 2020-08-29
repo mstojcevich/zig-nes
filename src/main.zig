@@ -26,6 +26,12 @@ pub fn main() !void {
     };
     defer c.SDL_DestroyRenderer(renderer);
 
+    _ = c.SDL_SetRenderDrawColor(renderer, 255, 0, 0, 255);
+    var i: i32 = 0;
+    while (i < 240) : (i += 1) {
+        _ = c.SDL_RenderDrawPoint(renderer, i, i);
+    }
+
     var quit = false;
     bus.run();
     while (!quit) {
