@@ -319,3 +319,8 @@ fn increment_y(vram_addr: *VramAddr) void {
         vram_addr.fine_y_scroll += 1;
     }
 }
+
+/// Returns whether the NMI interrupt flag on the CPU should be pulled low.
+pub fn should_trigger_nmi(state: *PpuState) bool {
+    return state.ctrl.nmi_enable and state.stat.in_vblank;
+}

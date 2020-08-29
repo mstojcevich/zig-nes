@@ -79,6 +79,11 @@ pub fn run() void {
 
     var cycle_count: usize = 0;
     while (cycle_count <= 26547) : (cycle_count += 1) {
+        if (ppu.should_trigger_nmi(&ppu_state)) {
+            // Set the CPU's NMI flag if the PPU is configured to output NMI and is in vblank
+            cpu_state.nmi_pending = true;
+        }
+
         if (cpu_state._current_activity == cpu.CpuActivity.FETCHING_INSTRUCTION) {
             std.debug.warn("{X:4}\tA:{X:2} X:{X:2} Y:{X:2} P:{X:2} -- {X:2} -- {} -- {},{}\n", .{ cpu_state.mem_address, cpu_state.regs.A, cpu_state.regs.X, cpu_state.regs.Y, @bitCast(u8, cpu_state.regs.P), read_memory(cpu_state.mem_address, internal_ram, cartridge_mapper), cycle_count + 7, ppu_state.vert_pos, ppu_state.horiz_pos});
         }
