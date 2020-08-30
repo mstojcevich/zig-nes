@@ -48,7 +48,7 @@ pub const PpuState = struct {
     stat: PpuStatus,
     vram_addr: VramAddr, // 'v' register
     temp_vram_addr: VramAddr, // 't' register, the address of the top-left onscreen tile
-    mem_address: u16,
+    mem_address: u16,  // State of the address pins to the VRAM chip
     bus_data: u8,
     vert_pos: u32,
     horiz_pos: u32,
@@ -93,6 +93,7 @@ fn read_memory(state: *PpuState, address: u16) u8 {
     suspend {
         state.cur_frame = @frame();
     }
+
     return state.bus_data;
 }
 
@@ -123,6 +124,40 @@ const TileRow = struct {
     attrib_data: u8,
     pattern_data: [8]u8, // Calculated pattern values for the row
 };
+
+/// Write to the PPUADDR register (0x2006)
+pub fn write_ppuaddr(state: *PpuState, val: u8) {
+    // FIXME
+}
+
+/// Write to the PPUDATA register (0x2007)
+pub fn write_ppudata(state: *PpuState) void {
+    // FIXME implement the write! The bus will have to determine if the PPU is writing, then
+    // make sure to write out the vram change before the PPU uses the value. Need to have a
+    // write flag similar to the real PPU pinout.
+    // And when does the write flag get unset? After the suspend{}?
+
+    // So... the VRAM is a separate chip, and the same address lines must be shared
+    // for writes/reads via 2007 and writes/reads during regular execution. There's
+    // gotta be some kind of things that need to be emulated correctly when there's
+    // contention for these address lines, plus what happens if the write flag
+    // needs to be set to handle a 2007 write, but we're in the middle of execution?
+    // Does stuff get written into the nametable? Right now the entire write happens right
+    // here on the spot, but in reality it'll have to happen at the same time as the
+    // PPU executes normally... There's a ton of room for improvement here, and maybe
+    // there's some test roms available for the behavior when writing to 2007 outside
+    // of VBLANK? Could also check visual 2c02.
+
+    // TODO Right now the actual write to VRAM happens in bus.zig when this is called,
+    // but that should be moved into here at some point.
+
+    // TODO writing the palette data at 3F00-3FFF must work differently. It supposedly doesn't set the WR flag,
+    // so it must set something internal inside of the PPU instead of trying to change anything that the bus sees.
+
+
+    const incr_amt: u16 = if (state.ctrl.increment_mode) 32 else 1;
+    state.vram_addr = @bitCast(VramAddr, @bitCast(u16, state.vram_addr) +% incr_amt);
+}
 
 /// Fetches tile data and puts it into state.buffer_tile. Spends 8 PPU cycles.
 fn fetch_tile(state: *PpuState) void {
@@ -252,37 +287,41 @@ pub fn run_ppu(state: *PpuState) void {
     state.horiz_pos = 0;
     render_scanline(state);
 
-    // Real scanlines
-    state.vert_pos = 0;
-    for ([_]u8{0} ** 240) |_, _| {
-        state.horiz_pos = 0;
-        render_scanline(state);
+    while (true) {
+        // Real scanlines
+        state.vert_pos = 0;
+        for ([_]u8{0} ** 240) |_, _| {
+            state.horiz_pos = 0;
+            render_scanline(state);
+            state.vert_pos += 1;
+        }
+
+        assert(state.vert_pos == 240); // now on the 241st line
+
+        // Do nothing (vblanking, but no interrupt yet)
+        for ([_]u8{0} ** 170) |_, _| {
+            // TODO what address to read? Whatever was on the bus last?
+            _ = read_memory(state, @bitCast(u16, state.vram_addr));
+        }
         state.vert_pos += 1;
+
+        assert(state.vert_pos == 241);
+
+        // VBlank setting actually happens during the second tick of scanline 241, but this implementation
+        // currently only emulates at memory-access accuracy, so it isn't fine-grained enough for that to
+        // matter.
+        set_vblank(state);
+        for ([_]u8{0} ** 170 ** 20) |_, _| {
+            // TODO what address to read? Whatever was on the bus last?
+            _ = read_memory(state, @bitCast(u16, state.vram_addr));
+        }
+        state.vert_pos += 20;
+
+        state.odd_frame = !state.odd_frame;
+        unset_vblank(state);
+
+        state.vert_pos = 0;
     }
-
-    assert(state.vert_pos == 240); // now on the 241st line
-
-    // Do nothing (vblanking, but no interrupt yet)
-    for ([_]u8{0} ** 170) |_, _| {
-        // TODO what address to read? Whatever was on the bus last?
-        _ = read_memory(state, state.mem_address);
-    }
-    state.vert_pos += 1;
-
-    assert(state.vert_pos == 241);
-
-    // VBlank setting actually happens during the second tick of scanline 241, but this implementation
-    // currently only emulates at memory-access accuracy, so it isn't fine-grained enough for that to
-    // matter.
-    set_vblank(state);
-    for ([_]u8{0} ** 170 ** 20) |_, _| {
-        // TODO what address to read? Whatever was on the bus last?
-        _ = read_memory(state, state.mem_address);
-    }
-    state.vert_pos += 20;
-
-    state.odd_frame = !state.odd_frame;
-    unset_vblank(state);
 }
 
 fn increment_coarse_x(vram_addr: *VramAddr) void {
